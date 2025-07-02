@@ -3,6 +3,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { 
   Monitor, 
   Power, 
@@ -13,7 +15,8 @@ import {
   Cpu, 
   HardDrive, 
   Wifi,
-  Activity
+  Activity,
+  Key
 } from 'lucide-react';
 import { toast } from "sonner";
 
@@ -23,13 +26,16 @@ interface OSOption {
   version: string;
   icon: string;
   color: string;
-  browserUrl: string;
+  browserlingOS: string;
+  browserlingVersion: string;
 }
 
 const Index = () => {
   const [selectedOS, setSelectedOS] = useState<string>('windows10');
   const [vmState, setVmState] = useState<'inactive' | 'active' | 'paused'>('inactive');
   const [browserUrl, setBrowserUrl] = useState('https://www.google.com');
+  const [apiKey, setApiKey] = useState('');
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [stats, setStats] = useState({
     cpu: 0,
     ram: 0,
@@ -44,7 +50,8 @@ const Index = () => {
       version: 'Pro 22H2',
       icon: '🪟',
       color: 'bg-blue-600',
-      browserUrl: 'https://www.google.com'
+      browserlingOS: 'win',
+      browserlingVersion: '10'
     },
     {
       id: 'windows11',
@@ -52,7 +59,8 @@ const Index = () => {
       version: 'Pro 23H2',
       icon: '💻',
       color: 'bg-purple-600',
-      browserUrl: 'https://www.bing.com'
+      browserlingOS: 'win',
+      browserlingVersion: '11'
     },
     {
       id: 'android',
@@ -60,13 +68,14 @@ const Index = () => {
       version: '15.0',
       icon: '📱',
       color: 'bg-green-600',
-      browserUrl: 'https://m.google.com'
+      browserlingOS: 'android',
+      browserlingVersion: '12'
     }
   ];
 
   const currentOS = osOptions.find(os => os.id === selectedOS);
 
-  // Simulate VM stats
+  // Simulate VM stats when active
   useEffect(() => {
     let interval: NodeJS.Timeout;
     
@@ -87,60 +96,139 @@ const Index = () => {
     };
   }, [vmState]);
 
+  const createBrowserlingSession = async () => {
+    if (!apiKey.trim()) {
+      toast.error('Please enter your Browserling API key');
+      return null;
+    }
+
+    if (!currentOS) return null;
+
+    try {
+      // Create session with Browserling API
+      const response = await fetch('https://api.browserling.com/session', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          os: currentOS.browserlingOS,
+          os_version: currentOS.browserlingVersion,
+          browser: 'chrome',
+          browser_version: 'latest',
+          url: browserUrl,
+          timeout: 3600 // 1 hour session
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API Error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.session_id;
+    } catch (error) {
+      console.error('Error creating Browserling session:', error);
+      toast.error('Failed to create VM session. Please check your API key.');
+      return null;
+    }
+  };
+
+  const terminateBrowserlingSession = async (sessionId: string) => {
+    if (!apiKey.trim()) return;
+
+    try {
+      await fetch(`https://api.browserling.com/session/${sessionId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+        },
+      });
+    } catch (error) {
+      console.error('Error terminating session:', error);
+    }
+  };
+
   const handleOSSelect = (osId: string) => {
     const os = osOptions.find(o => o.id === osId);
     if (os) {
       setSelectedOS(osId);
-      setBrowserUrl(os.browserUrl);
       toast.success(`Switched to ${os.name}`);
       
-      // If VM is active, reload with new browser
-      if (vmState === 'active' && iframeRef.current) {
-        iframeRef.current.src = os.browserUrl;
+      // If VM is active, restart with new OS
+      if (vmState === 'active') {
+        handleRestart();
       }
     }
   };
 
-  const handlePowerOn = () => {
+  const handlePowerOn = async () => {
     if (vmState === 'inactive') {
-      setVmState('active');
-      if (iframeRef.current) {
-        iframeRef.current.src = browserUrl;
+      const newSessionId = await createBrowserlingSession();
+      if (newSessionId) {
+        setSessionId(newSessionId);
+        setVmState('active');
+        
+        // Load the Browserling session in iframe
+        if (iframeRef.current) {
+          iframeRef.current.src = `https://www.browserling.com/session/${newSessionId}`;
+        }
+        
+        toast.success('Virtual machine started with real browser session');
       }
-      toast.success('Virtual machine started');
     }
   };
 
-  const handlePowerOff = () => {
-    if (vmState !== 'inactive') {
+  const handlePowerOff = async () => {
+    if (vmState !== 'inactive' && sessionId) {
+      await terminateBrowserlingSession(sessionId);
       setVmState('inactive');
+      setSessionId(null);
+      
       if (iframeRef.current) {
         iframeRef.current.src = '';
       }
+      
       toast.success('Virtual machine powered off');
     }
   };
 
-  const handleRestart = () => {
+  const handleRestart = async () => {
     if (vmState !== 'inactive') {
-      if (iframeRef.current) {
-        iframeRef.current.src = '';
-        setTimeout(() => {
-          if (iframeRef.current) {
-            iframeRef.current.src = browserUrl;
-          }
-        }, 1000);
+      // Terminate current session
+      if (sessionId) {
+        await terminateBrowserlingSession(sessionId);
       }
-      toast.success('Virtual machine restarted');
+      
+      // Create new session
+      const newSessionId = await createBrowserlingSession();
+      if (newSessionId) {
+        setSessionId(newSessionId);
+        
+        if (iframeRef.current) {
+          iframeRef.current.src = `https://www.browserling.com/session/${newSessionId}`;
+        }
+        
+        toast.success('Virtual machine restarted with new session');
+      }
     }
   };
 
   const handlePause = () => {
     if (vmState === 'active') {
       setVmState('paused');
+      if (iframeRef.current) {
+        iframeRef.current.style.pointerEvents = 'none';
+        iframeRef.current.style.opacity = '0.5';
+      }
       toast.warning('Virtual machine paused');
     } else if (vmState === 'paused') {
       setVmState('active');
+      if (iframeRef.current) {
+        iframeRef.current.style.pointerEvents = 'auto';
+        iframeRef.current.style.opacity = '1';
+      }
       toast.success('Virtual machine resumed');
     }
   };
@@ -154,10 +242,25 @@ const Index = () => {
     }
   };
 
-  const handleUrlChange = (url: string) => {
+  const handleUrlChange = async (url: string) => {
     setBrowserUrl(url);
-    if (vmState === 'active' && iframeRef.current) {
-      iframeRef.current.src = url;
+    
+    // If we have an active session, navigate to the new URL
+    if (vmState === 'active' && sessionId && apiKey.trim()) {
+      try {
+        await fetch(`https://api.browserling.com/session/${sessionId}/navigate`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ url }),
+        });
+        toast.success('Navigated to new URL');
+      } catch (error) {
+        console.error('Error navigating:', error);
+        toast.error('Failed to navigate to new URL');
+      }
     }
   };
 
@@ -167,12 +270,44 @@ const Index = () => {
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-5xl font-bold mb-4 bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
-            Virtual Browser VM
+            Real Virtual Browser VM
           </h1>
           <p className="text-slate-300 text-lg max-w-2xl mx-auto">
-            Experience real web browsing through unlimited virtual machines with multiple OS environments
+            Experience real web browsing through Browserling's virtual machine technology
           </p>
         </div>
+
+        {/* API Key Input */}
+        <Card className="mb-6 bg-slate-900/50 border-slate-700">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-4">
+              <Key className="w-5 h-5 text-yellow-400" />
+              <div className="flex-1">
+                <Label htmlFor="api-key" className="text-slate-200 mb-2 block">
+                  Browserling API Key (Required for real VM functionality)
+                </Label>
+                <Input
+                  id="api-key"
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="Enter your Browserling API key"
+                  className="bg-slate-800 border-slate-600 text-white"
+                />
+              </div>
+              <Button
+                onClick={() => window.open('https://www.browserling.com/api', '_blank')}
+                variant="outline"
+                className="border-slate-600 text-slate-300 hover:bg-slate-800"
+              >
+                Get API Key
+              </Button>
+            </div>
+            <p className="text-sm text-slate-400 mt-2">
+              Sign up at Browserling to get your API key for unlimited real browser sessions
+            </p>
+          </CardContent>
+        </Card>
 
         <div className="grid lg:grid-cols-4 gap-6">
           {/* OS Selection Panel */}
@@ -222,7 +357,12 @@ const Index = () => {
               <div className="p-4 border-b border-slate-700 flex items-center justify-between bg-slate-800/50">
                 <div className="flex items-center gap-3">
                   <Monitor className="w-5 h-5 text-slate-400" />
-                  <span className="font-medium">Virtual Machine Display</span>
+                  <span className="font-medium">Real Virtual Machine Display</span>
+                  {sessionId && (
+                    <Badge variant="outline" className="text-xs">
+                      Session: {sessionId.substring(0, 8)}...
+                    </Badge>
+                  )}
                 </div>
                 <Badge className={currentOS?.color || 'bg-slate-600'}>
                   {currentOS?.name || 'No OS Selected'}
@@ -233,12 +373,12 @@ const Index = () => {
               <div className="p-4 border-b border-slate-700 bg-slate-800/30">
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-slate-400 min-w-fit">URL:</span>
-                  <input
+                  <Input
                     type="url"
                     value={browserUrl}
-                    onChange={(e) => handleUrlChange(e.target.value)}
+                    onChange={(e) => setBrowserUrl(e.target.value)}
                     onKeyPress={(e) => e.key === 'Enter' && handleUrlChange(browserUrl)}
-                    className="flex-1 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+                    className="flex-1 bg-slate-700 border-slate-600 text-white"
                     placeholder="Enter website URL"
                     disabled={vmState !== 'active'}
                   />
@@ -258,18 +398,20 @@ const Index = () => {
                 {vmState === 'active' ? (
                   <iframe
                     ref={iframeRef}
-                    className={`w-full h-full border-none ${vmState === 'paused' ? 'opacity-50 pointer-events-none' : ''}`}
-                    src={browserUrl}
-                    title="Virtual Browser"
-                    sandbox="allow-same-origin allow-scripts allow-forms allow-links allow-popups"
+                    className="w-full h-full border-none"
+                    title="Real Virtual Browser"
+                    sandbox="allow-same-origin allow-scripts allow-forms allow-links allow-popups allow-downloads"
                   />
                 ) : (
                   <div className="flex items-center justify-center h-full text-center">
                     <div>
                       <Monitor className="w-16 h-16 mx-auto mb-4 text-slate-600" />
-                      <h3 className="text-xl font-medium mb-2 text-slate-300">VM Session Ready</h3>
+                      <h3 className="text-xl font-medium mb-2 text-slate-300">Real VM Session Ready</h3>
                       <p className="text-slate-500 max-w-md mx-auto">
-                        Select an operating system and click "Power On" to start your virtual browser
+                        {!apiKey.trim() 
+                          ? 'Enter your Browserling API key above, then select an OS and click "Power On"'
+                          : 'Select an operating system and click "Power On" to start your real virtual browser'
+                        }
                       </p>
                     </div>
                   </div>
@@ -311,7 +453,7 @@ const Index = () => {
             <div className="flex flex-wrap justify-center gap-4">
               <Button
                 onClick={handlePowerOn}
-                disabled={vmState !== 'inactive'}
+                disabled={vmState !== 'inactive' || !apiKey.trim()}
                 className="bg-green-600 hover:bg-green-700 flex items-center gap-2"
               >
                 <Power className="w-4 h-4" />
@@ -360,7 +502,7 @@ const Index = () => {
 
         {/* Footer */}
         <div className="text-center mt-8 text-slate-400">
-          <p>Powered by Advanced Virtual Browser Technology | Unlimited Usage</p>
+          <p>Powered by Browserling Real Virtual Browser Technology | Unlimited Usage with API Key</p>
         </div>
       </div>
     </div>
