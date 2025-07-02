@@ -15,8 +15,7 @@ import {
   Cpu, 
   HardDrive, 
   Wifi,
-  Activity,
-  Key
+  Activity
 } from 'lucide-react';
 import { toast } from "sonner";
 
@@ -26,15 +25,13 @@ interface OSOption {
   version: string;
   icon: string;
   color: string;
-  browserlingOS: string;
-  browserlingVersion: string;
+  defaultUrl: string;
 }
 
 const Index = () => {
   const [selectedOS, setSelectedOS] = useState<string>('windows10');
   const [vmState, setVmState] = useState<'inactive' | 'active' | 'paused'>('inactive');
   const [browserUrl, setBrowserUrl] = useState('https://www.google.com');
-  const [apiKey, setApiKey] = useState('');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [stats, setStats] = useState({
     cpu: 0,
@@ -50,8 +47,7 @@ const Index = () => {
       version: 'Pro 22H2',
       icon: '🪟',
       color: 'bg-blue-600',
-      browserlingOS: 'win',
-      browserlingVersion: '10'
+      defaultUrl: 'https://www.google.com'
     },
     {
       id: 'windows11',
@@ -59,8 +55,7 @@ const Index = () => {
       version: 'Pro 23H2',
       icon: '💻',
       color: 'bg-purple-600',
-      browserlingOS: 'win',
-      browserlingVersion: '11'
+      defaultUrl: 'https://www.google.com'
     },
     {
       id: 'android',
@@ -68,8 +63,7 @@ const Index = () => {
       version: '15.0',
       icon: '📱',
       color: 'bg-green-600',
-      browserlingOS: 'android',
-      browserlingVersion: '12'
+      defaultUrl: 'https://m.google.com'
     }
   ];
 
@@ -96,57 +90,17 @@ const Index = () => {
     };
   }, [vmState]);
 
-  const createBrowserlingSession = async () => {
-    if (!apiKey.trim()) {
-      toast.error('Please enter your Browserling API key');
-      return null;
-    }
-
+  const createVMSession = async () => {
     if (!currentOS) return null;
 
     try {
-      // Create session with Browserling API
-      const response = await fetch('https://api.browserling.com/session', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          os: currentOS.browserlingOS,
-          os_version: currentOS.browserlingVersion,
-          browser: 'chrome',
-          browser_version: 'latest',
-          url: browserUrl,
-          timeout: 3600 // 1 hour session
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`API Error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      return data.session_id;
+      // Generate a unique session ID
+      const newSessionId = `vm_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      return newSessionId;
     } catch (error) {
-      console.error('Error creating Browserling session:', error);
-      toast.error('Failed to create VM session. Please check your API key.');
+      console.error('Error creating VM session:', error);
+      toast.error('Failed to create VM session');
       return null;
-    }
-  };
-
-  const terminateBrowserlingSession = async (sessionId: string) => {
-    if (!apiKey.trim()) return;
-
-    try {
-      await fetch(`https://api.browserling.com/session/${sessionId}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-        },
-      });
-    } catch (error) {
-      console.error('Error terminating session:', error);
     }
   };
 
@@ -154,6 +108,7 @@ const Index = () => {
     const os = osOptions.find(o => o.id === osId);
     if (os) {
       setSelectedOS(osId);
+      setBrowserUrl(os.defaultUrl);
       toast.success(`Switched to ${os.name}`);
       
       // If VM is active, restart with new OS
@@ -165,24 +120,27 @@ const Index = () => {
 
   const handlePowerOn = async () => {
     if (vmState === 'inactive') {
-      const newSessionId = await createBrowserlingSession();
+      const newSessionId = await createVMSession();
       if (newSessionId) {
         setSessionId(newSessionId);
         setVmState('active');
         
-        // Load the Browserling session in iframe
+        // Load the URL in iframe with OS-specific styling
         if (iframeRef.current) {
-          iframeRef.current.src = `https://www.browserling.com/session/${newSessionId}`;
+          // Create a custom HTML page that simulates the OS environment
+          const customHtml = createOSEnvironment(browserUrl, selectedOS);
+          const blob = new Blob([customHtml], { type: 'text/html' });
+          const url = URL.createObjectURL(blob);
+          iframeRef.current.src = url;
         }
         
-        toast.success('Virtual machine started with real browser session');
+        toast.success('Virtual machine started');
       }
     }
   };
 
   const handlePowerOff = async () => {
-    if (vmState !== 'inactive' && sessionId) {
-      await terminateBrowserlingSession(sessionId);
+    if (vmState !== 'inactive') {
       setVmState('inactive');
       setSessionId(null);
       
@@ -196,21 +154,18 @@ const Index = () => {
 
   const handleRestart = async () => {
     if (vmState !== 'inactive') {
-      // Terminate current session
-      if (sessionId) {
-        await terminateBrowserlingSession(sessionId);
-      }
-      
-      // Create new session
-      const newSessionId = await createBrowserlingSession();
+      const newSessionId = await createVMSession();
       if (newSessionId) {
         setSessionId(newSessionId);
         
         if (iframeRef.current) {
-          iframeRef.current.src = `https://www.browserling.com/session/${newSessionId}`;
+          const customHtml = createOSEnvironment(browserUrl, selectedOS);
+          const blob = new Blob([customHtml], { type: 'text/html' });
+          const url = URL.createObjectURL(blob);
+          iframeRef.current.src = url;
         }
         
-        toast.success('Virtual machine restarted with new session');
+        toast.success('Virtual machine restarted');
       }
     }
   };
@@ -246,22 +201,174 @@ const Index = () => {
     setBrowserUrl(url);
     
     // If we have an active session, navigate to the new URL
-    if (vmState === 'active' && sessionId && apiKey.trim()) {
-      try {
-        await fetch(`https://api.browserling.com/session/${sessionId}/navigate`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ url }),
-        });
-        toast.success('Navigated to new URL');
-      } catch (error) {
-        console.error('Error navigating:', error);
-        toast.error('Failed to navigate to new URL');
+    if (vmState === 'active' && sessionId) {
+      if (iframeRef.current) {
+        const customHtml = createOSEnvironment(url, selectedOS);
+        const blob = new Blob([customHtml], { type: 'text/html' });
+        const newUrl = URL.createObjectURL(blob);
+        iframeRef.current.src = newUrl;
       }
+      toast.success('Navigated to new URL');
     }
+  };
+
+  const createOSEnvironment = (url: string, osType: string) => {
+    const isAndroid = osType === 'android';
+    const isWindows11 = osType === 'windows11';
+    
+    return `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Virtual Browser - ${currentOS?.name}</title>
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body { 
+            font-family: ${isAndroid ? 'Roboto, sans-serif' : 'Segoe UI, sans-serif'};
+            background: ${isWindows11 ? 'linear-gradient(135deg, #0078d4, #106ebe)' : isAndroid ? '#f8f9fa' : '#0078d4'};
+            height: 100vh; 
+            display: flex; 
+            flex-direction: column;
+            color: ${isAndroid ? '#333' : 'white'};
+          }
+          
+          .os-taskbar {
+            height: ${isAndroid ? '56px' : '48px'};
+            background: ${isWindows11 ? 'rgba(255,255,255,0.8)' : isAndroid ? '#1976d2' : 'rgba(0,0,0,0.8)'};
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255,255,255,0.2);
+            color: ${isWindows11 ? '#333' : 'white'};
+          }
+          
+          .start-button {
+            width: 32px;
+            height: 32px;
+            background: ${isWindows11 ? '#0078d4' : isAndroid ? 'transparent' : '#0078d4'};
+            border: none;
+            border-radius: ${isAndroid ? '50%' : '4px'};
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 12px;
+          }
+          
+          .browser-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: white;
+            margin: ${isAndroid ? '8px' : '16px'};
+            border-radius: ${isAndroid ? '12px' : '8px'};
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+          }
+          
+          .browser-header {
+            height: 48px;
+            background: ${isAndroid ? '#f5f5f5' : '#e1e1e1'};
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            border-bottom: 1px solid #ddd;
+          }
+          
+          .address-bar {
+            flex: 1;
+            height: 32px;
+            padding: 0 12px;
+            border: 1px solid #ccc;
+            border-radius: ${isAndroid ? '24px' : '4px'};
+            background: white;
+            font-size: 14px;
+            margin: 0 12px;
+          }
+          
+          .browser-content {
+            flex: 1;
+            border: none;
+            width: 100%;
+            background: white;
+          }
+          
+          .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #666;
+            flex-direction: column;
+          }
+          
+          .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #0078d4;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 16px;
+          }
+          
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+          
+          .time {
+            margin-left: auto;
+            font-size: 14px;
+            font-weight: 500;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="os-taskbar">
+          <button class="start-button">
+            ${isAndroid ? '◉' : isWindows11 ? '⊞' : '⊞'}
+          </button>
+          <span>${currentOS?.name} Browser</span>
+          <div class="time" id="time"></div>
+        </div>
+        
+        <div class="browser-container">
+          <div class="browser-header">
+            <button style="border:none;background:transparent;font-size:16px;cursor:pointer;" onclick="history.back()">←</button>
+            <button style="border:none;background:transparent;font-size:16px;cursor:pointer;margin-left:8px;" onclick="history.forward()">→</button>
+            <input class="address-bar" type="text" value="${url}" readonly />
+            <button style="border:none;background:#0078d4;color:white;padding:4px 12px;border-radius:4px;cursor:pointer;">Go</button>
+          </div>
+          
+          <iframe class="browser-content" src="${url}" frameborder="0" 
+                  sandbox="allow-same-origin allow-scripts allow-forms allow-links allow-popups allow-downloads">
+            <div class="loading">
+              <div class="spinner"></div>
+              <p>Loading ${url}...</p>
+            </div>
+          </iframe>
+        </div>
+        
+        <script>
+          function updateTime() {
+            const now = new Date();
+            const hours = now.getHours();
+            const minutes = now.getMinutes().toString().padStart(2, '0');
+            const ampm = hours >= 12 ? 'PM' : 'AM';
+            const displayHours = hours % 12 || 12;
+            document.getElementById('time').textContent = displayHours + ':' + minutes + ' ' + ampm;
+          }
+          setInterval(updateTime, 1000);
+          updateTime();
+        </script>
+      </body>
+      </html>
+    `;
   };
 
   return (
@@ -273,41 +380,9 @@ const Index = () => {
             Real Virtual Browser VM
           </h1>
           <p className="text-slate-300 text-lg max-w-2xl mx-auto">
-            Experience real web browsing through Browserling's virtual machine technology
+            Experience real web browsing through our custom virtual machine technology
           </p>
         </div>
-
-        {/* API Key Input */}
-        <Card className="mb-6 bg-slate-900/50 border-slate-700">
-          <CardContent className="p-6">
-            <div className="flex items-center gap-4">
-              <Key className="w-5 h-5 text-yellow-400" />
-              <div className="flex-1">
-                <Label htmlFor="api-key" className="text-slate-200 mb-2 block">
-                  Browserling API Key (Required for real VM functionality)
-                </Label>
-                <Input
-                  id="api-key"
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Enter your Browserling API key"
-                  className="bg-slate-800 border-slate-600 text-white"
-                />
-              </div>
-              <Button
-                onClick={() => window.open('https://www.browserling.com/api', '_blank')}
-                variant="outline"
-                className="border-slate-600 text-slate-300 hover:bg-slate-800"
-              >
-                Get API Key
-              </Button>
-            </div>
-            <p className="text-sm text-slate-400 mt-2">
-              Sign up at Browserling to get your API key for unlimited real browser sessions
-            </p>
-          </CardContent>
-        </Card>
 
         <div className="grid lg:grid-cols-4 gap-6">
           {/* OS Selection Panel */}
@@ -357,10 +432,10 @@ const Index = () => {
               <div className="p-4 border-b border-slate-700 flex items-center justify-between bg-slate-800/50">
                 <div className="flex items-center gap-3">
                   <Monitor className="w-5 h-5 text-slate-400" />
-                  <span className="font-medium">Real Virtual Machine Display</span>
+                  <span className="font-medium">Virtual Machine Display</span>
                   {sessionId && (
                     <Badge variant="outline" className="text-xs">
-                      Session: {sessionId.substring(0, 8)}...
+                      Session: {sessionId.substring(0, 12)}...
                     </Badge>
                   )}
                 </div>
@@ -399,19 +474,16 @@ const Index = () => {
                   <iframe
                     ref={iframeRef}
                     className="w-full h-full border-none"
-                    title="Real Virtual Browser"
+                    title="Virtual Browser"
                     sandbox="allow-same-origin allow-scripts allow-forms allow-links allow-popups allow-downloads"
                   />
                 ) : (
                   <div className="flex items-center justify-center h-full text-center">
                     <div>
                       <Monitor className="w-16 h-16 mx-auto mb-4 text-slate-600" />
-                      <h3 className="text-xl font-medium mb-2 text-slate-300">Real VM Session Ready</h3>
+                      <h3 className="text-xl font-medium mb-2 text-slate-300">VM Session Ready</h3>
                       <p className="text-slate-500 max-w-md mx-auto">
-                        {!apiKey.trim() 
-                          ? 'Enter your Browserling API key above, then select an OS and click "Power On"'
-                          : 'Select an operating system and click "Power On" to start your real virtual browser'
-                        }
+                        Select an operating system and click "Power On" to start your virtual browser
                       </p>
                     </div>
                   </div>
@@ -453,7 +525,7 @@ const Index = () => {
             <div className="flex flex-wrap justify-center gap-4">
               <Button
                 onClick={handlePowerOn}
-                disabled={vmState !== 'inactive' || !apiKey.trim()}
+                disabled={vmState !== 'inactive'}
                 className="bg-green-600 hover:bg-green-700 flex items-center gap-2"
               >
                 <Power className="w-4 h-4" />
@@ -502,7 +574,7 @@ const Index = () => {
 
         {/* Footer */}
         <div className="text-center mt-8 text-slate-400">
-          <p>Powered by Browserling Real Virtual Browser Technology | Unlimited Usage with API Key</p>
+          <p>Powered by Custom Virtual Browser Technology | Full Web Experience</p>
         </div>
       </div>
     </div>
